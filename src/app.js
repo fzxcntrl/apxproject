@@ -2,6 +2,9 @@ const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
 
+const authRoutes = require("./routes/auth.routes");
+const errorHandler = require("./middleware/errorHandler");
+
 const app = express();
 
 // --------------- Middleware ---------------
@@ -13,5 +16,11 @@ app.use(morgan("dev"));
 app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
+
+// --------------- Routes ---------------
+app.use("/api/auth", authRoutes);
+
+// --------------- Error Handler (must be last) ---------------
+app.use(errorHandler);
 
 module.exports = app;
