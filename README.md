@@ -2,6 +2,8 @@
 
 A RESTful API for managing personal tasks, built with **Node.js**, **Express**, and **Prisma ORM**. Features JWT-based authentication, soft-delete/restore, filtering, search, and sorting — all scoped per user.
 
+**Live API:** [https://apxproject.onrender.com](https://apxproject.onrender.com)
+
 ---
 
 ## Tech Stack
