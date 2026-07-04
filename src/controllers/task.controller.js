@@ -1,5 +1,9 @@
 const prisma = require("../config/db");
 
+// ── Allowed enum values ──
+const VALID_PRIORITIES = ["LOW", "MEDIUM", "HIGH"];
+const VALID_STATUSES = ["PENDING", "COMPLETED"];
+
 /**
  * POST /api/tasks
  * Creates a new task for the authenticated user.
@@ -8,15 +12,28 @@ const createTask = async (req, res, next) => {
   try {
     const { title, description, priority, dueDate } = req.body;
 
-    if (!title) {
+    if (!title || !String(title).trim()) {
       return res
         .status(400)
         .json({ success: false, message: "Title is required" });
     }
 
+    if (priority && !VALID_PRIORITIES.includes(priority)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid priority — must be one of: ${VALID_PRIORITIES.join(", ")}`,
+      });
+    }
+
+    if (dueDate && isNaN(Date.parse(dueDate))) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid dueDate format" });
+    }
+
     const task = await prisma.task.create({
       data: {
-        title,
+        title: String(title).trim(),
         description: description || null,
         priority: priority || undefined, // falls back to schema default (MEDIUM)
         dueDate: dueDate ? new Date(dueDate) : null,
@@ -47,6 +64,20 @@ const getTasks = async (req, res, next) => {
 
     // ── Build WHERE clause ──
     const where = { userId: req.userId, isDeleted: false };
+
+    if (status && !VALID_STATUSES.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status filter — must be one of: ${VALID_STATUSES.join(", ")}`,
+      });
+    }
+
+    if (priority && !VALID_PRIORITIES.includes(priority)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid priority filter — must be one of: ${VALID_PRIORITIES.join(", ")}`,
+      });
+    }
 
     if (status) where.status = status;
     if (priority) where.priority = priority;
@@ -101,6 +132,33 @@ const updateTask = async (req, res, next) => {
   try {
     const { title, description, priority, status, dueDate } = req.body;
 
+    // ---------- Validate enum values ----------
+    if (priority && !VALID_PRIORITIES.includes(priority)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid priority — must be one of: ${VALID_PRIORITIES.join(", ")}`,
+      });
+    }
+
+    if (status && !VALID_STATUSES.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status — must be one of: ${VALID_STATUSES.join(", ")}`,
+      });
+    }
+
+    if (dueDate && isNaN(Date.parse(dueDate))) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid dueDate format" });
+    }
+
+    if (title !== undefined && !String(title).trim()) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Title cannot be empty" });
+    }
+
     // Ensure ownership
     const existing = await prisma.task.findFirst({
       where: { id: req.params.id, userId: req.userId, isDeleted: false },
@@ -115,7 +173,7 @@ const updateTask = async (req, res, next) => {
     const task = await prisma.task.update({
       where: { id: req.params.id },
       data: {
-        ...(title !== undefined && { title }),
+        ...(title !== undefined && { title: String(title).trim() }),
         ...(description !== undefined && { description }),
         ...(priority !== undefined && { priority }),
         ...(status !== undefined && { status }),

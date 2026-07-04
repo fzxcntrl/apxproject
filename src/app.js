@@ -22,6 +22,11 @@ app.get("/health", (_req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/tasks", taskRoutes);
 
+// --------------- 404 Fallback ---------------
+app.use((_req, res) => {
+  res.status(404).json({ success: false, message: "Route not found" });
+});
+
 // --------------- Error Handler (must be last) ---------------
 app.use(errorHandler);
 

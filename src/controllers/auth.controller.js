@@ -2,6 +2,9 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const prisma = require("../config/db");
 
+// Simple email regex — covers the vast majority of valid addresses
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 /**
  * POST /api/auth/register
  * Creates a new user after validating inputs.
@@ -17,8 +20,22 @@ const register = async (req, res, next) => {
         .json({ success: false, message: "Email and password are required" });
     }
 
+    const trimmedEmail = String(email).trim().toLowerCase();
+
+    if (!EMAIL_REGEX.test(trimmedEmail)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid email format" });
+    }
+
+    if (String(password).length < 6) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Password must be at least 6 characters" });
+    }
+
     // ---------- Duplicate check ----------
-    const existingUser = await prisma.user.findUnique({ where: { email } });
+    const existingUser = await prisma.user.findUnique({ where: { email: trimmedEmail } });
 
     if (existingUser) {
       return res
@@ -30,7 +47,7 @@ const register = async (req, res, next) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const user = await prisma.user.create({
-      data: { email, password: hashedPassword },
+      data: { email: trimmedEmail, password: hashedPassword },
     });
 
     res.status(201).json({
@@ -57,8 +74,10 @@ const login = async (req, res, next) => {
         .json({ success: false, message: "Email and password are required" });
     }
 
+    const trimmedEmail = String(email).trim().toLowerCase();
+
     // ---------- Find user ----------
-    const user = await prisma.user.findUnique({ where: { email } });
+    const user = await prisma.user.findUnique({ where: { email: trimmedEmail } });
 
     if (!user) {
       return res
