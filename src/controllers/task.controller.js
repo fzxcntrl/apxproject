@@ -33,12 +33,36 @@ const createTask = async (req, res, next) => {
 /**
  * GET /api/tasks
  * Returns all non-deleted tasks belonging to the authenticated user.
+ *
+ * Query params (all optional, combinable):
+ *   status   = PENDING | COMPLETED
+ *   priority = LOW | MEDIUM | HIGH
+ *   search   = <string>  (case-insensitive match on title)
+ *   sortBy   = dueDate | createdAt  (default: createdAt)
+ *   order    = asc | desc            (default: desc)
  */
 const getTasks = async (req, res, next) => {
   try {
+    const { status, priority, search, sortBy, order } = req.query;
+
+    // ── Build WHERE clause ──
+    const where = { userId: req.userId, isDeleted: false };
+
+    if (status) where.status = status;
+    if (priority) where.priority = priority;
+
+    if (search) {
+      where.title = { contains: search, mode: "insensitive" };
+    }
+
+    // ── Build ORDER BY clause ──
+    const allowedSortFields = ["dueDate", "createdAt"];
+    const sortField = allowedSortFields.includes(sortBy) ? sortBy : "createdAt";
+    const sortOrder = order === "asc" ? "asc" : "desc";
+
     const tasks = await prisma.task.findMany({
-      where: { userId: req.userId, isDeleted: false },
-      orderBy: { createdAt: "desc" },
+      where,
+      orderBy: { [sortField]: sortOrder },
     });
 
     res.json({ success: true, data: tasks });
