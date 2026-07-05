@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { getTasks, createTask, updateTask, deleteTask } from '../api/tasks';
-import { Plus, Trash2, Edit2, CheckCircle2, Circle, X } from 'lucide-react';
+import { getTasks, createTask, updateTask, deleteTask, restoreTask } from '../api/tasks';
+import { Plus, Trash2, Edit2, CheckCircle2, Circle, X, Search, ArrowUp, ArrowDown } from 'lucide-react';
 
 const Tasks = () => {
   const { logout } = useAuth();
@@ -11,13 +11,41 @@ const Tasks = () => {
   // Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [editingTaskId, setEditingTaskId] = useState(null);
   const [formData, setFormData] = useState({ title: '', description: '', priority: 'MEDIUM', dueDate: '' });
   const [error, setError] = useState('');
+
+  // Toast state for undo
+  const [toast, setToast] = useState({ visible: false, task: null, timeoutId: null });
+
+  // Filter & Sort state
+  const [searchInput, setSearchInput] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('ALL');
+  const [priorityFilter, setPriorityFilter] = useState('ALL');
+  const [sortBy, setSortBy] = useState('createdAt');
+  const [order, setOrder] = useState('desc');
+
+  // Debounce search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchInput);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
   const fetchTasks = async () => {
     try {
       setLoading(true);
-      const res = await getTasks();
+      const params = {};
+      
+      if (debouncedSearch) params.search = debouncedSearch;
+      if (statusFilter !== 'ALL') params.status = statusFilter;
+      if (priorityFilter !== 'ALL') params.priority = priorityFilter;
+      if (sortBy) params.sortBy = sortBy;
+      if (order) params.order = order;
+
+      const res = await getTasks(params);
       if (res.success) setTasks(res.data);
     } catch (err) {
       console.error("Failed to fetch tasks", err);
@@ -28,31 +56,75 @@ const Tasks = () => {
 
   useEffect(() => {
     fetchTasks();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch, statusFilter, priorityFilter, sortBy, order]);
 
   const handleToggleStatus = async (task) => {
     try {
       const newStatus = task.status === 'PENDING' ? 'COMPLETED' : 'PENDING';
-      // Optimistic update
       setTasks(tasks.map(t => t.id === task.id ? { ...t, status: newStatus } : t));
       await updateTask(task.id, { status: newStatus });
+      // If we are filtering by status, we should technically refetch to remove it from the list
+      if (statusFilter !== 'ALL') {
+        fetchTasks();
+      }
     } catch (err) {
       console.error("Failed to update status", err);
-      // Revert on failure
       fetchTasks();
     }
   };
 
-  const handleDelete = async (id) => {
-    if (!window.confirm("Are you sure you want to delete this task?")) return;
+  const handleEdit = (task) => {
+    setEditingTaskId(task.id);
+    setFormData({
+      title: task.title,
+      description: task.description || '',
+      priority: task.priority,
+      dueDate: task.dueDate ? task.dueDate.split('T')[0] : ''
+    });
+    setIsModalOpen(true);
+  };
+
+  const handleDelete = async (task) => {
+    if (toast.timeoutId) clearTimeout(toast.timeoutId);
+    
+    setTasks(tasks.filter(t => t.id !== task.id));
+    
     try {
-      // Optimistic update
-      setTasks(tasks.filter(t => t.id !== id));
-      await deleteTask(id);
+      await deleteTask(task.id);
+      
+      const timeoutId = setTimeout(() => {
+        setToast({ visible: false, task: null, timeoutId: null });
+      }, 5000);
+      
+      setToast({ visible: true, task, timeoutId });
     } catch (err) {
       console.error("Failed to delete task", err);
       fetchTasks();
     }
+  };
+
+  const handleUndo = async () => {
+    if (!toast.task) return;
+    const taskToRestore = toast.task;
+    
+    if (toast.timeoutId) clearTimeout(toast.timeoutId);
+    setToast({ visible: false, task: null, timeoutId: null });
+    
+    // We could do an optimistic update here, but a full refetch respects the active filters/sorting perfectly
+    try {
+      await restoreTask(taskToRestore.id);
+      fetchTasks();
+    } catch (err) {
+      console.error("Failed to restore task", err);
+      fetchTasks();
+    }
+  };
+
+  const openNewTaskModal = () => {
+    setEditingTaskId(null);
+    setFormData({ title: '', description: '', priority: 'MEDIUM', dueDate: '' });
+    setIsModalOpen(true);
   };
 
   const handleSubmit = async (e) => {
@@ -66,17 +138,26 @@ const Tasks = () => {
 
     setIsSubmitting(true);
     try {
-      const res = await createTask({
+      const payload = {
         ...formData,
         dueDate: formData.dueDate ? new Date(formData.dueDate).toISOString() : undefined,
-      });
-      if (res.success) {
-        setTasks([res.data, ...tasks]);
-        setIsModalOpen(false);
-        setFormData({ title: '', description: '', priority: 'MEDIUM', dueDate: '' });
+      };
+
+      if (editingTaskId) {
+        const res = await updateTask(editingTaskId, payload);
+        if (res.success) {
+          setIsModalOpen(false);
+          fetchTasks(); // Refetch to respect current sort/filters
+        }
+      } else {
+        const res = await createTask(payload);
+        if (res.success) {
+          setIsModalOpen(false);
+          fetchTasks(); // Refetch to respect current sort/filters
+        }
       }
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to create task');
+      setError(err.response?.data?.message || `Failed to ${editingTaskId ? 'update' : 'create'} task`);
     } finally {
       setIsSubmitting(false);
     }
@@ -89,9 +170,28 @@ const Tasks = () => {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans relative">
+      {/* Toast Notification */}
+      {toast.visible && (
+        <div className="fixed bottom-6 right-6 z-50 bg-slate-800 text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-4 animate-in slide-in-from-bottom-5">
+          <span className="text-sm font-medium">Task deleted.</span>
+          <button 
+            onClick={handleUndo}
+            className="text-indigo-400 font-semibold hover:text-indigo-300 transition-colors text-sm uppercase tracking-wide"
+          >
+            Undo
+          </button>
+          <button 
+            onClick={() => setToast({ ...toast, visible: false })}
+            className="text-slate-400 hover:text-slate-200 ml-2"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
       {/* Header */}
-      <header className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center sticky top-0 z-10">
+      <header className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center sticky top-0 z-20">
         <h1 className="text-xl font-bold tracking-tight text-indigo-600">Task Manager</h1>
         <button 
           onClick={logout}
@@ -102,44 +202,125 @@ const Tasks = () => {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-5xl mx-auto px-6 py-8">
-        <div className="flex justify-between items-center mb-8">
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 py-8">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
           <h2 className="text-2xl font-bold">Your Tasks</h2>
           <button 
-            onClick={() => setIsModalOpen(true)}
-            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium transition-colors shadow-sm"
+            onClick={openNewTaskModal}
+            className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg font-medium transition-colors shadow-sm whitespace-nowrap"
           >
             <Plus size={18} />
             <span>New Task</span>
           </button>
         </div>
 
+        {/* Filters Bar */}
+        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 mb-8 sticky top-[65px] z-10 flex flex-col gap-4">
+          
+          <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
+            {/* Search */}
+            <div className="relative w-full md:max-w-xs flex-shrink-0">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+              <input 
+                type="text" 
+                placeholder="Search tasks..." 
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-colors"
+              />
+            </div>
+
+            {/* Sort */}
+            <div className="flex items-center gap-2 self-end md:self-auto">
+              <span className="text-sm text-slate-500 hidden sm:inline">Sort by:</span>
+              <select 
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="bg-slate-50 border border-slate-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="createdAt">Created Date</option>
+                <option value="dueDate">Due Date</option>
+              </select>
+              <button 
+                onClick={() => setOrder(order === 'desc' ? 'asc' : 'desc')}
+                className="p-2 border border-slate-200 bg-slate-50 rounded-lg text-slate-500 hover:bg-slate-100 hover:text-indigo-600 transition-colors"
+                title={`Sort ${order === 'desc' ? 'Descending' : 'Ascending'}`}
+              >
+                {order === 'desc' ? <ArrowDown size={18} /> : <ArrowUp size={18} />}
+              </button>
+            </div>
+          </div>
+
+          <div className="h-px bg-slate-100 w-full hidden md:block"></div>
+
+          <div className="flex flex-col md:flex-row gap-4 md:gap-8 overflow-x-auto pb-2 md:pb-0">
+            {/* Status Filter */}
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-slate-500 whitespace-nowrap">Status:</span>
+              <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
+                {['ALL', 'PENDING', 'COMPLETED'].map(s => (
+                  <button
+                    key={s}
+                    onClick={() => setStatusFilter(s)}
+                    className={`px-3 py-1 text-xs font-medium rounded-md capitalize transition-colors whitespace-nowrap ${
+                      statusFilter === s ? 'bg-white shadow-sm text-indigo-700' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {s.toLowerCase()}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Priority Filter */}
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-slate-500 whitespace-nowrap">Priority:</span>
+              <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
+                {['ALL', 'HIGH', 'MEDIUM', 'LOW'].map(p => (
+                  <button
+                    key={p}
+                    onClick={() => setPriorityFilter(p)}
+                    className={`px-3 py-1 text-xs font-medium rounded-md capitalize transition-colors whitespace-nowrap ${
+                      priorityFilter === p ? 'bg-white shadow-sm text-indigo-700' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {p.toLowerCase()}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+        </div>
+
         {/* Loading State */}
         {loading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-pulse">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 animate-pulse">
             {[1, 2, 3].map(i => (
               <div key={i} className="bg-white h-40 rounded-xl border border-slate-200 p-5 shadow-sm">
                 <div className="h-5 bg-slate-200 rounded w-3/4 mb-4"></div>
                 <div className="h-4 bg-slate-200 rounded w-full mb-2"></div>
                 <div className="h-4 bg-slate-200 rounded w-1/2 mb-6"></div>
-                <div className="flex gap-2">
-                  <div className="h-6 w-16 bg-slate-200 rounded-full"></div>
-                  <div className="h-6 w-16 bg-slate-200 rounded-full"></div>
-                </div>
               </div>
             ))}
           </div>
         ) : tasks.length === 0 ? (
           /* Empty State */
           <div className="flex flex-col items-center justify-center bg-white border border-slate-200 border-dashed rounded-2xl py-20 px-4 text-center">
-            <h3 className="text-lg font-semibold text-slate-800 mb-2">No tasks yet</h3>
-            <p className="text-slate-500 mb-6 max-w-sm">Get started by creating your first task to stay organized and productive.</p>
-            <button 
-              onClick={() => setIsModalOpen(true)}
-              className="bg-indigo-50 text-indigo-700 hover:bg-indigo-100 px-5 py-2.5 rounded-lg font-medium transition-colors"
-            >
-              Create first task
-            </button>
+            <h3 className="text-lg font-semibold text-slate-800 mb-2">No tasks found</h3>
+            <p className="text-slate-500 mb-6 max-w-sm">
+              {(statusFilter !== 'ALL' || priorityFilter !== 'ALL' || debouncedSearch) 
+                ? "Try adjusting your filters or search query." 
+                : "Get started by creating your first task to stay organized and productive."}
+            </p>
+            {!(statusFilter !== 'ALL' || priorityFilter !== 'ALL' || debouncedSearch) && (
+              <button 
+                onClick={openNewTaskModal}
+                className="bg-indigo-50 text-indigo-700 hover:bg-indigo-100 px-5 py-2.5 rounded-lg font-medium transition-colors"
+              >
+                Create first task
+              </button>
+            )}
           </div>
         ) : (
           /* Task Grid */
@@ -168,7 +349,16 @@ const Tasks = () => {
                   
                   {/* Actions (visible on hover or always on touch) */}
                   <div className="flex items-center gap-1 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button onClick={() => handleDelete(task.id)} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors">
+                    <button 
+                      onClick={() => handleEdit(task)} 
+                      className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
+                    >
+                      <Edit2 size={16} />
+                    </button>
+                    <button 
+                      onClick={() => handleDelete(task)} 
+                      className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                    >
                       <Trash2 size={16} />
                     </button>
                   </div>
@@ -203,12 +393,12 @@ const Tasks = () => {
         )}
       </main>
 
-      {/* New Task Modal */}
+      {/* New/Edit Task Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
-              <h3 className="text-lg font-semibold">Create New Task</h3>
+              <h3 className="text-lg font-semibold">{editingTaskId ? 'Edit Task' : 'Create New Task'}</h3>
               <button 
                 onClick={() => setIsModalOpen(false)}
                 className="text-slate-400 hover:text-slate-700 transition-colors p-1"
@@ -289,7 +479,7 @@ const Tasks = () => {
                     isSubmitting ? 'bg-indigo-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'
                   }`}
                 >
-                  {isSubmitting ? 'Saving...' : 'Create Task'}
+                  {isSubmitting ? 'Saving...' : editingTaskId ? 'Save Changes' : 'Create Task'}
                 </button>
               </div>
             </form>
